@@ -28,19 +28,27 @@ jobs:
           tar xzf python-ios.tar.gz -C python-ios
           echo "Python framework contents:"
           ls python-ios/
+          ls python-ios/Python.xcframework/ || true
 
       - name: Cache OCCT static build
         id: occt-cache
         uses: actions/cache@v4
         with:
           path: occt-install
-          key: occt-ios-arm64-static-v2
+          key: occt-ios-arm64-static-v3
 
-      - name: Clone and build OCCT for iOS arm64 (static)
+      - name: Download OCCT source tarball
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch V7_8_1 \
-            https://github.com/Open-Cascade-SAS/OCCT.git occt-src
+          curl -L -o occt.tgz \
+            https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz
+          tar xzf occt.tgz
+          mv OCCT-7_8_1 occt-src
+          echo "OCCT source ready, $(ls occt-src | wc -l) items"
+
+      - name: Configure OCCT for iOS arm64
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p occt-build occt-install
           cmake -S occt-src -B occt-build \
@@ -60,12 +68,16 @@ jobs:
             -DUSE_FREETYPE=OFF \
             -DUSE_TK=OFF \
             -DUSE_TCL=OFF \
-            -DUSE_OPENGL=OFF \
             2>&1 | tee occt-configure.log
+          echo "Configure exit: $?"
+
+      - name: Build OCCT
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
           cmake --build occt-build --config Release --parallel 3 \
             2>&1 | tee occt-build.log
           cmake --install occt-build --config Release
-          echo "OCCT libs installed: $(ls occt-install/lib/*.a 2>/dev/null | wc -l)"
+          echo "OCCT libs: $(ls occt-install/lib/*.a 2>/dev/null | wc -l)"
 
       - name: Clone FreeCAD
         run: |
@@ -74,7 +86,8 @@ jobs:
       - name: Configure FreeCAD (App + Base only, headless)
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          PY_FW=$(pwd)/python-ios/Python.xcframework/ios-arm64
+          PY_FW=$(find $(pwd)/python-ios -name "Python.framework" -path "*iphoneos*" | head -1)
+          echo "Python framework: $PY_FW"
           cmake -S freecad -B freecad-build \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -108,7 +121,7 @@ jobs:
             -DBUILD_TEST=OFF \
             -DBUILD_CLOUD=OFF \
             -DENABLE_DEVELOPER_TESTS=OFF \
-            -DPython3_ROOT_DIR="$PY_FW" \
+            -DPython3_FRAMEWORK="$PY_FW" \
             -DOCC_INCLUDE_DIR=$(pwd)/occt-install/include/opencascade \
             -DOCC_LIBRARY_DIR=$(pwd)/occt-install/lib \
             2>&1 | tee configure.log
@@ -118,7 +131,7 @@ jobs:
           cmake --build freecad-build --config Release --parallel 3 \
             2>&1 | tee build.log
 
-      - name: Upload logs and artifacts
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -129,4 +142,5 @@ jobs:
             occt-configure.log
             occt-build.log
             freecad-build/CMakeFiles/CMakeError.log
+            freecad-build/CMakeCache.txt
           if-no-files-found: ignore
