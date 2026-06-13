@@ -18,37 +18,36 @@ jobs:
           sw_vers
           xcodebuild -version
           cmake --version
-          python3 --version
+          xcrun --sdk iphoneos --show-sdk-path
 
       - name: Clone FreeCAD
         run: |
           git clone --depth 1 https://github.com/FreeCAD/FreeCAD.git freecad
 
-      - name: Install host tools (brew)
+      - name: Install host tools
         run: |
-          brew install cmake ninja xerces-c boost
+          brew install cmake
 
       - name: Cache OCCT iOS build
         id: occt-cache
         uses: actions/cache@v4
         with:
           path: occt-ios
-          key: occt-ios-arm64-7.8.1-v2
+          key: occt-ios-arm64-7.8.1-xcode-v1
 
       - name: Download and build OCCT for iOS arm64
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
-          # Download OCCT source
           curl -L -o occt.tgz \
             "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz"
           tar xzf occt.tgz
-          OCCT_SRC="OCCT-7_8_1"
-
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p occt-build occt-ios
-          cmake -S "$OCCT_SRC" -B occt-build -G Ninja \
+
+          cmake -S OCCT-7_8_1 -B occt-build -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/occt-ios \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
@@ -56,25 +55,24 @@ jobs:
             -DBUILD_MODULE_Draw=OFF \
             -DBUILD_MODULE_Visualization=OFF \
             -DBUILD_MODULE_ApplicationFramework=OFF \
-            -DBUILD_MODULE_DataExchange=ON \
-            -DBUILD_MODULE_ModelingAlgorithms=ON \
-            -DBUILD_MODULE_ModelingData=ON \
-            -DBUILD_MODULE_FoundationClasses=ON \
             -DUSE_FREETYPE=OFF \
-            -DUSE_OPENGL=OFF \
-            -DUSE_GLES2=OFF \
             2>&1 | tee occt-configure.log
-          cmake --build occt-build --config Release -j3 2>&1 | tee occt-build.log
-          cmake --install occt-build
-          echo "OCCT installed: $(ls occt-ios/lib/*.a 2>/dev/null | wc -l) static libs"
+
+          cmake --build occt-build --config Release \
+            -- -sdk iphoneos -arch arm64 -jobs 3 -quiet \
+            2>&1 | tee occt-build.log
+
+          cmake --install occt-build --config Release
+          echo "OCCT libs: $(ls occt-ios/lib/*.a 2>/dev/null | wc -l)"
 
       - name: Configure FreeCAD headless for iOS
         run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p freecad-build
           cmake -S freecad -B freecad-build -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
@@ -122,22 +120,22 @@ jobs:
 
       - name: Build FreeCAD headless
         run: |
-          cmake --build freecad-build --config Release -- -quiet -jobs 3 2>&1 | tee build.log
+          cmake --build freecad-build --config Release \
+            -- -sdk iphoneos -arch arm64 -jobs 3 -quiet \
+            2>&1 | tee build.log
 
-      - name: Collect artifacts
+      - name: Collect and package artifacts
         run: |
           mkdir -p dist
-          find freecad-build -name "libFreeCADApp*" -o -name "libFreeCADBase*" -o -name "Part.so" \
-            | xargs -I{} cp {} dist/ 2>/dev/null || true
-          find freecad-build/Release-iphoneos -name "*.a" -exec cp {} dist/ \; 2>/dev/null || true
+          find freecad-build -name "*.a" | xargs -I{} cp {} dist/ 2>/dev/null || true
           ls -lh dist/
+          cd dist && zip -r ../freecad-ios-headless.zip . && cd ..
 
       - name: Publish as GitHub Release
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd dist && zip -r ../freecad-ios-headless.zip . && cd ..
           gh release create "build-${{ github.run_number }}" freecad-ios-headless.zip \
             --repo "${{ github.repository }}" \
             --title "FreeCAD iOS headless build #${{ github.run_number }}" \
