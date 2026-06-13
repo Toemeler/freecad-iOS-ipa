@@ -1,4 +1,4 @@
-name: Build FreeCAD iOS Headless
+name: Build FreeCAD iOS IPA
 
 on:
   workflow_dispatch:
@@ -8,68 +8,26 @@ permissions:
 
 jobs:
   build:
-    name: Build FreeCAD headless for iOS arm64
+    name: Build FreeCAD (iOS headless)
     runs-on: macos-15
     timeout-minutes: 180
 
     steps:
-      - name: System info
+      - name: Toolchain info
         run: |
           sw_vers
           xcodebuild -version
           cmake --version
-          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Clone FreeCAD
         run: |
           git clone --depth 1 https://github.com/FreeCAD/FreeCAD.git freecad
 
-      - name: Install host tools
-        run: |
-          brew install cmake
-
-      - name: Cache OCCT iOS build
-        id: occt-cache
-        uses: actions/cache@v4
-        with:
-          path: occt-ios
-          key: occt-ios-arm64-7.8.1-xcode-v1
-
-      - name: Download and build OCCT for iOS arm64
-        if: steps.occt-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -L -o occt.tgz \
-            "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz"
-          tar xzf occt.tgz
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p occt-build occt-ios
-
-          cmake -S OCCT-7_8_1 -B occt-build -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT="$SDK" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/occt-ios \
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DBUILD_LIBRARY_TYPE=Static \
-            -DBUILD_MODULE_Draw=OFF \
-            -DBUILD_MODULE_Visualization=OFF \
-            -DBUILD_MODULE_ApplicationFramework=OFF \
-            -DUSE_FREETYPE=OFF \
-            2>&1 | tee occt-configure.log
-
-          cmake --build occt-build --config Release \
-            -- -sdk iphoneos -arch arm64 -jobs 3 -quiet \
-            2>&1 | tee occt-build.log
-
-          cmake --install occt-build --config Release
-          echo "OCCT libs: $(ls occt-ios/lib/*.a 2>/dev/null | wc -l)"
-
-      - name: Configure FreeCAD headless for iOS
+      - name: Configure (headless, iOS arm64, no GUI)
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p freecad-build
-          cmake -S freecad -B freecad-build -G Xcode \
+          cmake -S freecad -B build -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_SYSROOT="$SDK" \
@@ -78,78 +36,22 @@ jobs:
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
-            -DOCC_INCLUDE_DIR=$(pwd)/occt-ios/include/opencascade \
-            -DOCC_LIBRARY_DIR=$(pwd)/occt-ios/lib \
-            -DBUILD_GUI=OFF \
-            -DBUILD_PART=ON \
-            -DBUILD_IMPORT=ON \
-            -DBUILD_SKETCHER=OFF \
-            -DBUILD_FEM=OFF \
-            -DBUILD_MESH=OFF \
-            -DBUILD_MESH_PART=OFF \
-            -DBUILD_FLAT_MESH=OFF \
-            -DBUILD_ADDONMGR=OFF \
-            -DBUILD_BIM=OFF \
-            -DBUILD_DRAFT=OFF \
-            -DBUILD_HELP=OFF \
-            -DBUILD_INSPECTION=OFF \
-            -DBUILD_MATERIAL=OFF \
-            -DBUILD_OPENSCAD=OFF \
-            -DBUILD_PART_DESIGN=OFF \
-            -DBUILD_CAM=OFF \
-            -DBUILD_ASSEMBLY=OFF \
-            -DBUILD_PLOT=OFF \
-            -DBUILD_POINTS=OFF \
-            -DBUILD_REVERSEENGINEERING=OFF \
-            -DBUILD_ROBOT=OFF \
-            -DBUILD_SHOW=OFF \
-            -DBUILD_SPREADSHEET=OFF \
-            -DBUILD_START=OFF \
-            -DBUILD_TEST=OFF \
-            -DBUILD_MEASURE=OFF \
-            -DBUILD_TECHDRAW=OFF \
-            -DBUILD_SURFACE=OFF \
-            -DBUILD_WEB=OFF \
-            -DBUILD_CLOUD=OFF \
-            -DBUILD_TEMPLATE=OFF \
-            -DENABLE_DEVELOPER_TESTS=OFF \
-            -DBUILD_DYNAMIC_LINK_PYTHON=OFF \
-            -DFREECAD_USE_FREETYPE=OFF \
-            -DBUILD_FEM_NETGEN=OFF \
+            -DFREECAD_BUILD_GUI=OFF \
             2>&1 | tee configure.log
 
-      - name: Build FreeCAD headless
+      - name: Build
         run: |
-          cmake --build freecad-build --config Release \
+          cmake --build build --config Release \
             -- -sdk iphoneos -arch arm64 -jobs 3 -quiet \
             2>&1 | tee build.log
 
-      - name: Collect and package artifacts
-        run: |
-          mkdir -p dist
-          find freecad-build -name "*.a" | xargs -I{} cp {} dist/ 2>/dev/null || true
-          ls -lh dist/
-          cd dist && zip -r ../freecad-ios-headless.zip . && cd ..
-
-      - name: Publish as GitHub Release
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "build-${{ github.run_number }}" freecad-ios-headless.zip \
-            --repo "${{ github.repository }}" \
-            --title "FreeCAD iOS headless build #${{ github.run_number }}" \
-            --notes "Headless FreeCAD core (App+Base+Part) for iOS arm64. No GUI. Run ${{ github.run_id }}."
-
-      - name: Upload failure logs
-        if: failure()
+      - name: Upload logs and artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: failure-logs
+          name: build-output
           path: |
             configure.log
             build.log
-            occt-configure.log
-            occt-build.log
-            freecad-build/CMakeFiles/CMakeError.log
+            build/CMakeFiles/CMakeError.log
           if-no-files-found: ignore
