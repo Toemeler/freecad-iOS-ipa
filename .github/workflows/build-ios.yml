@@ -26,16 +26,14 @@ jobs:
             https://github.com/beeware/Python-Apple-support/releases/download/3.13-b14/Python-3.13-iOS-support.b14.tar.gz
           mkdir -p python-ios
           tar xzf python-ios.tar.gz -C python-ios
-          echo "Python framework contents:"
-          ls python-ios/
-          ls python-ios/Python.xcframework/ || true
+          find python-ios -name "Python.framework" | head -5
 
       - name: Cache OCCT static build
         id: occt-cache
         uses: actions/cache@v4
         with:
           path: occt-install
-          key: occt-ios-arm64-static-v3
+          key: occt-ios-arm64-static-v4
 
       - name: Download OCCT source tarball
         if: steps.occt-cache.outputs.cache-hit != 'true'
@@ -44,11 +42,12 @@ jobs:
             https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz
           tar xzf occt.tgz
           mv OCCT-7_8_1 occt-src
-          echo "OCCT source ready, $(ls occt-src | wc -l) items"
+          echo "OCCT source ready"
 
       - name: Configure OCCT for iOS arm64
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
+          set -o pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p occt-build occt-install
           cmake -S occt-src -B occt-build \
@@ -69,11 +68,11 @@ jobs:
             -DUSE_TK=OFF \
             -DUSE_TCL=OFF \
             2>&1 | tee occt-configure.log
-          echo "Configure exit: $?"
 
       - name: Build OCCT
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
+          set -o pipefail
           cmake --build occt-build --config Release --parallel 3 \
             2>&1 | tee occt-build.log
           cmake --install occt-build --config Release
@@ -85,6 +84,7 @@ jobs:
 
       - name: Configure FreeCAD (App + Base only, headless)
         run: |
+          set -o pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           PY_FW=$(find $(pwd)/python-ios -name "Python.framework" -path "*iphoneos*" | head -1)
           echo "Python framework: $PY_FW"
@@ -128,6 +128,7 @@ jobs:
 
       - name: Build FreeCAD
         run: |
+          set -o pipefail
           cmake --build freecad-build --config Release --parallel 3 \
             2>&1 | tee build.log
 
@@ -143,4 +144,5 @@ jobs:
             occt-build.log
             freecad-build/CMakeFiles/CMakeError.log
             freecad-build/CMakeCache.txt
+            occt-build/CMakeFiles/CMakeError.log
           if-no-files-found: ignore
