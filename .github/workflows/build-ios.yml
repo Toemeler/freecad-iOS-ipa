@@ -20,14 +20,62 @@ jobs:
           cmake --version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Download BeeWare Python 3.13 iOS framework
+        run: |
+          curl -L -o python-ios.tar.gz \
+            https://github.com/beeware/Python-Apple-support/releases/download/3.13-b14/Python-3.13-iOS-support.b14.tar.gz
+          mkdir -p python-ios
+          tar xzf python-ios.tar.gz -C python-ios
+          echo "Python framework contents:"
+          ls python-ios/
+
+      - name: Cache OCCT static build
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          path: occt-install
+          key: occt-ios-arm64-static-v2
+
+      - name: Clone and build OCCT for iOS arm64 (static)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch V7_8_1 \
+            https://github.com/Open-Cascade-SAS/OCCT.git occt-src
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p occt-build occt-install
+          cmake -S occt-src -B occt-build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/occt-install \
+            -DBUILD_LIBRARY_TYPE=Static \
+            -DBUILD_MODULE_Draw=OFF \
+            -DBUILD_MODULE_Visualization=OFF \
+            -DBUILD_MODULE_ApplicationFramework=OFF \
+            -DBUILD_MODULE_DataExchange=OFF \
+            -DBUILD_MODULE_ModelingAlgorithms=ON \
+            -DBUILD_MODULE_ModelingData=ON \
+            -DBUILD_MODULE_FoundationClasses=ON \
+            -DUSE_FREETYPE=OFF \
+            -DUSE_TK=OFF \
+            -DUSE_TCL=OFF \
+            -DUSE_OPENGL=OFF \
+            2>&1 | tee occt-configure.log
+          cmake --build occt-build --config Release --parallel 3 \
+            2>&1 | tee occt-build.log
+          cmake --install occt-build --config Release
+          echo "OCCT libs installed: $(ls occt-install/lib/*.a 2>/dev/null | wc -l)"
+
       - name: Clone FreeCAD
         run: |
           git clone --depth 1 https://github.com/FreeCAD/FreeCAD.git freecad
 
-      - name: Configure (headless, iOS arm64, no GUI)
+      - name: Configure FreeCAD (App + Base only, headless)
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          cmake -S freecad -B build -G Xcode \
+          PY_FW=$(pwd)/python-ios/Python.xcframework/ios-arm64
+          cmake -S freecad -B freecad-build \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_SYSROOT="$SDK" \
@@ -36,13 +84,38 @@ jobs:
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
-            -DFREECAD_BUILD_GUI=OFF \
+            -DBUILD_GUI=OFF \
+            -DBUILD_PART=OFF \
+            -DBUILD_MESH=OFF \
+            -DBUILD_FEM=OFF \
+            -DBUILD_SKETCHER=OFF \
+            -DBUILD_DRAFT=OFF \
+            -DBUILD_BIM=OFF \
+            -DBUILD_ADDONMGR=OFF \
+            -DBUILD_CAM=OFF \
+            -DBUILD_ASSEMBLY=OFF \
+            -DBUILD_SPREADSHEET=OFF \
+            -DBUILD_TECHDRAW=OFF \
+            -DBUILD_SURFACE=OFF \
+            -DBUILD_REVERSEENGINEERING=OFF \
+            -DBUILD_ROBOT=OFF \
+            -DBUILD_INSPECTION=OFF \
+            -DBUILD_OPENSCAD=OFF \
+            -DBUILD_MATERIAL=OFF \
+            -DBUILD_HELP=OFF \
+            -DBUILD_START=OFF \
+            -DBUILD_WEB=OFF \
+            -DBUILD_TEST=OFF \
+            -DBUILD_CLOUD=OFF \
+            -DENABLE_DEVELOPER_TESTS=OFF \
+            -DPython3_ROOT_DIR="$PY_FW" \
+            -DOCC_INCLUDE_DIR=$(pwd)/occt-install/include/opencascade \
+            -DOCC_LIBRARY_DIR=$(pwd)/occt-install/lib \
             2>&1 | tee configure.log
 
-      - name: Build
+      - name: Build FreeCAD
         run: |
-          cmake --build build --config Release \
-            -- -sdk iphoneos -arch arm64 -jobs 3 -quiet \
+          cmake --build freecad-build --config Release --parallel 3 \
             2>&1 | tee build.log
 
       - name: Upload logs and artifacts
@@ -53,5 +126,7 @@ jobs:
           path: |
             configure.log
             build.log
-            build/CMakeFiles/CMakeError.log
+            occt-configure.log
+            occt-build.log
+            freecad-build/CMakeFiles/CMakeError.log
           if-no-files-found: ignore
