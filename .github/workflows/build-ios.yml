@@ -24,30 +24,34 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/FreeCAD/FreeCAD.git freecad
 
-      - name: Install dependencies (brew)
+      - name: Install host tools (brew)
         run: |
-          brew install cmake ninja opencascade python@3.12 xerces-c zlib boost
+          brew install cmake ninja xerces-c boost
 
       - name: Cache OCCT iOS build
+        id: occt-cache
         uses: actions/cache@v4
         with:
           path: occt-ios
-          key: occt-ios-arm64-v1
+          key: occt-ios-arm64-7.8.1-v2
 
-      - name: Build OpenCASCADE for iOS arm64
+      - name: Download and build OCCT for iOS arm64
+        if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
-          if [ -d "occt-ios/lib" ]; then
-            echo "OCCT cache hit, skipping build"
-            exit 0
-          fi
-          OCCT_SRC=$(brew --prefix opencascade)
-          mkdir -p occt-ios-build occt-ios
-          cmake -S "$OCCT_SRC" -B occt-ios-build -G Ninja \
+          # Download OCCT source
+          curl -L -o occt.tgz \
+            "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz"
+          tar xzf occt.tgz
+          OCCT_SRC="OCCT-7_8_1"
+
+          mkdir -p occt-build occt-ios
+          cmake -S "$OCCT_SRC" -B occt-build -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/occt-ios \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DBUILD_LIBRARY_TYPE=Static \
             -DBUILD_MODULE_Draw=OFF \
             -DBUILD_MODULE_Visualization=OFF \
@@ -58,9 +62,11 @@ jobs:
             -DBUILD_MODULE_FoundationClasses=ON \
             -DUSE_FREETYPE=OFF \
             -DUSE_OPENGL=OFF \
+            -DUSE_GLES2=OFF \
             2>&1 | tee occt-configure.log
-          cmake --build occt-ios-build --config Release -j3 2>&1 | tee occt-build.log
-          cmake --install occt-ios-build
+          cmake --build occt-build --config Release -j3 2>&1 | tee occt-build.log
+          cmake --install occt-build
+          echo "OCCT installed: $(ls occt-ios/lib/*.a 2>/dev/null | wc -l) static libs"
 
       - name: Configure FreeCAD headless for iOS
         run: |
@@ -68,8 +74,9 @@ jobs:
           cmake -S freecad -B freecad-build -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" \
@@ -120,16 +127,10 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          find freecad-build -name "libFreeCADApp*" -o -name "libFreeCADBase*" | xargs -I{} cp {} dist/ 2>/dev/null || true
-          find freecad-build -name "*.a" | xargs -I{} cp {} dist/ 2>/dev/null || true
+          find freecad-build -name "libFreeCADApp*" -o -name "libFreeCADBase*" -o -name "Part.so" \
+            | xargs -I{} cp {} dist/ 2>/dev/null || true
+          find freecad-build/Release-iphoneos -name "*.a" -exec cp {} dist/ \; 2>/dev/null || true
           ls -lh dist/
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: freecad-ios-headless-libs
-          path: dist/
-          if-no-files-found: warn
 
       - name: Publish as GitHub Release
         if: success()
@@ -140,7 +141,7 @@ jobs:
           gh release create "build-${{ github.run_number }}" freecad-ios-headless.zip \
             --repo "${{ github.repository }}" \
             --title "FreeCAD iOS headless build #${{ github.run_number }}" \
-            --notes "Headless FreeCAD core (App+Base+Part) compiled for iOS arm64. No GUI. Run ${{ github.run_id }}."
+            --notes "Headless FreeCAD core (App+Base+Part) for iOS arm64. No GUI. Run ${{ github.run_id }}."
 
       - name: Upload failure logs
         if: failure()
